@@ -6,9 +6,9 @@ import hashlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PARTS = ROOT / "src_payload"
-OUT = ROOT / "mp3_organizer_v6_5_0.py"
-EXPECTED_SHA256 = "dd8ab7d68b19cb9e7b9afba3824f538384f1f23fd7c987f5f4b1a100c3599ffe"
+PARTS = ROOT / "src_payload_v7"
+OUT = ROOT / "mp3_organizer_v7_0_0.py"
+EXPECTED_SHA256 = "e723acd53bedb8c9b07f070bff62c63c8adda9e91656fd16e78662561ea0cce4"
 
 payload = "".join(
     p.read_text(encoding="ascii").strip()
@@ -16,7 +16,7 @@ payload = "".join(
 )
 
 if not payload:
-    raise SystemExit("No source payload parts found.")
+    raise SystemExit("No v7 source payload parts found.")
 
 raw = gzip.decompress(base64.b85decode(payload.encode("ascii")))
 sha = hashlib.sha256(raw).hexdigest()
