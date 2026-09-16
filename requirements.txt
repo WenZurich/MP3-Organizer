@@ -1,3 +1,4 @@
+# Build target: Windows x64
 mutagen>=1.47,<2
 Pillow>=10,<12
 pyinstaller>=6,<7
