@@ -1,0 +1,213 @@
+name: Build Windows EXE v7.3.2
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/patch_v732.py'
+      - '.github/workflows/build-windows-v732.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Windows x64 UI layout fix
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Reconstruct v7.3.2
+        shell: pwsh
+        run: |
+          python tools/reconstruct_source.py
+          python tools/patch_v710.py
+          python tools/patch_v711.py
+          python tools/patch_v720.py
+          python tools/patch_v721.py
+          python tools/patch_v730.py
+          python tools/patch_v731.py
+          python tools/patch_v732.py
+
+      - name: Syntax and smoke test
+        shell: pwsh
+        run: |
+          python -m py_compile mp3_organizer_v7_3_2.py
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          python mp3_organizer_v7_3_2.py --smoke-test
+
+      - name: Create UI geometry regression test
+        shell: pwsh
+        run: |
+          @'
+          import importlib.util
+          import os
+          import sys
+          from pathlib import Path
+          from PySide6.QtCore import QPoint, QRect, Qt
+          from PySide6.QtWidgets import QApplication
+          from PySide6.QtGui import QPixmap
+
+          factor = os.environ.get('QT_SCALE_FACTOR', '1')
+          spec = importlib.util.spec_from_file_location('organizer', 'mp3_organizer_v7_3_2.py')
+          mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+          app = QApplication.instance() or QApplication([])
+          w = mod.MainWindow(); w.resize(1600, 1000)
+          w.folder_edit.setText(r'C:\Users\User.DESKTOP-DSB6AEL\Desktop\MP3')
+          w.cover_edit.setText(r'C:\Users\User.DESKTOP-DSB6AEL\Desktop\Training Img\MP3 Cover')
+          w.album_art_edit.setText(r'C:\Users\User.DESKTOP-DSB6AEL\Desktop\Training Img\Between Departures Album Cover.jpg')
+          for e in (w.folder_edit, w.cover_edit, w.album_art_edit, w.album_edit):
+              e.setCursorPosition(0)
+          w.show(); app.processEvents(); app.processEvents()
+          w._refresh_sidebar_text_geometry(); app.processEvents()
+
+          def yspan(widget):
+              p = widget.mapTo(w, QPoint(0, 0))
+              return p.y(), p.y() + widget.height()
+
+          def assert_below(upper, lower, gap=0, name=''):
+              ut, ub = yspan(upper); lt, lb = yspan(lower)
+              assert ub + gap <= lt, f'{name}: overlap upper={ut,ub} lower={lt,lb}'
+
+          # Exact overlaps visible in the user's screenshot must never regress.
+          assert_below(w.labels['album_desc'], w.labels['album_name'], 2, 'album description/name')
+          assert_below(w.labels['album_name'], w.album_edit, 2, 'album label/input')
+          assert_below(w.album_edit, w.switch_rows['unify_album'], 2, 'album input/toggle')
+          assert_below(w.labels['album_art_file'], w.album_art_edit, 2, 'album-art label/input')
+          assert_below(w.album_art_edit, w.album_art_btn, 2, 'album-art input/actions')
+          assert_below(w.album_art_btn, w.labels['album_art_desc'], 2, 'album-art actions/description')
+
+          # Wrapped labels must be tall enough for their actual rendered text.
+          text_w = max(260, w.sidebar_content.width() - 48)
+          for key in ('sources_desc','album_desc','album_art_desc','options_desc','workflow_hint'):
+              label = w.labels[key]
+              ideal = label.fontMetrics().boundingRect(
+                  QRect(0, 0, text_w, 10000),
+                  Qt.TextFlag.TextWordWrap | Qt.TextFlag.AlignLeft,
+                  label.text(),
+              ).height()
+              assert label.height() >= ideal, f'{key}: {label.height()} < {ideal}'
+
+          assert w.sidebar_scroll.horizontalScrollBar().maximum() == 0
+          assert all(x.height() >= 42 for x in (w.folder_edit,w.cover_edit,w.album_edit,w.album_art_edit))
+          assert all(x.height() >= 42 for x in (w.folder_btn,w.cover_btn,w.album_art_btn,w.album_art_clear_btn))
+
+          if factor == '1.5':
+              pix = QPixmap(w.size())
+              w.render(pix)
+              assert pix.save('ui-v7.3.2-150pct.png')
+          print('UI geometry passed at scale', factor)
+          w.close()
+          '@ | Set-Content -Encoding utf8 test_ui_v732.py
+
+      - name: Test UI at 125 percent
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:QT_SCALE_FACTOR = '1.25'
+          python test_ui_v732.py
+
+      - name: Test UI at 150 percent and render preview
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:QT_SCALE_FACTOR = '1.5'
+          python test_ui_v732.py
+
+      - name: Test UI at 200 percent
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:QT_SCALE_FACTOR = '2.0'
+          python test_ui_v732.py
+
+      - name: Upload UI preview
+        uses: actions/upload-artifact@v4
+        with:
+          name: MP3-Organizer-v7.3.2-UI-preview
+          path: ui-v7.3.2-150pct.png
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload source
+        uses: actions/upload-artifact@v4
+        with:
+          name: MP3-Organizer-v7.3.2-source
+          path: mp3_organizer_v7_3_2.py
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Create Windows icon
+        shell: pwsh
+        run: |
+          @'
+          from PIL import Image, ImageDraw
+          im = Image.new('RGBA', (256, 256), (0, 0, 0, 0))
+          d = ImageDraw.Draw(im)
+          d.rounded_rectangle((12, 12, 244, 244), radius=58, fill=(0, 122, 255, 255))
+          d.ellipse((70, 146, 126, 202), fill='white')
+          d.rounded_rectangle((112, 62, 132, 174), radius=8, fill='white')
+          d.polygon([(128, 62), (194, 47), (194, 79), (128, 94)], fill='white')
+          im.save('app.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])
+          '@ | Set-Content -Encoding utf8 make_icon.py
+          python make_icon.py
+
+      - name: Create Windows version metadata
+        shell: pwsh
+        run: |
+          @'
+          VSVersionInfo(
+            ffi=FixedFileInfo(filevers=(7,3,2,0), prodvers=(7,3,2,0), mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0,0)),
+            kids=[
+              StringFileInfo([StringTable(u'040904B0', [
+                StringStruct(u'CompanyName', u'WenZurich'), StringStruct(u'FileDescription', u'MP3 Organizer'),
+                StringStruct(u'FileVersion', u'7.3.2'), StringStruct(u'InternalName', u'MP3 Organizer'),
+                StringStruct(u'OriginalFilename', u'MP3 Organizer.exe'), StringStruct(u'ProductName', u'MP3 Organizer'),
+                StringStruct(u'ProductVersion', u'7.3.2')
+              ])]), VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
+            ]
+          )
+          '@ | Set-Content -Encoding utf8 version_info.txt
+
+      - name: Build single-file Windows app
+        shell: pwsh
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --windowed `
+            --name "MP3 Organizer" `
+            --icon app.ico `
+            --version-file version_info.txt `
+            --collect-all imageio_ffmpeg `
+            mp3_organizer_v7_3_2.py
+
+      - name: Verify EXE exists
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'dist\MP3 Organizer.exe')) { throw 'EXE was not produced.' }
+          Get-Item 'dist\MP3 Organizer.exe' | Format-List Name,Length,LastWriteTime
+
+      - name: Upload Windows EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: MP3-Organizer-Windows-x64-v7.3.2
+          path: dist/MP3 Organizer.exe
+          if-no-files-found: error
+          retention-days: 30
