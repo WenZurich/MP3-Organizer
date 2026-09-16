@@ -68,10 +68,12 @@ jobs:
           spec.loader.exec_module(mod)
           ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
 
+          # Fixture A: reproduce the exact detection class. The payload starts
+          # as MP4/AAC, while a valid MPEG stream later in the file tricks
+          # Mutagen's MP3 scanner into returning an MP3 object.
           mp4 = Path('aac_payload.mp4')
           bait = Path('mpeg_bait.mp3')
-          fake = Path('disguised_aac.mp3')
-
+          tricky = Path('tricky_disguised_aac.mp3')
           subprocess.check_call([
               ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
               '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1',
@@ -82,29 +84,30 @@ jobs:
               '-f', 'lavfi', '-i', 'sine=frequency=880:duration=0.3',
               '-c:a', 'libmp3lame', '-q:a', '4', str(bait)
           ])
+          tricky.write_bytes(mp4.read_bytes() + bait.read_bytes())
+          tags = ID3(); tags.add(TIT2(encoding=3, text='另一半')); tags.add(TPE1(encoding=3, text='金池')); tags.save(tricky, v2_version=3)
+          misleading = MP3(tricky)
+          assert misleading.info.length > 0, 'Fixture did not reproduce Mutagen false-positive'
+          assert mod.sniff_audio_container(tricky) == 'MP4 / M4A (AAC)'
+          detected = mod.inspect_audio_health(tricky)
+          assert detected['state'] == 'convert', detected
+          assert detected['format'] == 'MP4 / M4A (AAC)', detected
 
-          # Reproduce the Jin Chi failure class: the true payload starts as
-          # MP4/AAC, but later bytes contain a valid MPEG stream. A heuristic
-          # MP3 scanner can therefore return a false positive.
-          fake.write_bytes(mp4.read_bytes() + bait.read_bytes())
-          tags = ID3()
-          tags.add(TIT2(encoding=3, text='另一半'))
-          tags.add(TPE1(encoding=3, text='金池'))
-          tags.save(fake, v2_version=3)
-
-          misleading = MP3(fake)
-          assert misleading.info.length > 0, 'Test did not reproduce Mutagen false-positive'
-          assert mod.sniff_audio_container(fake) == 'MP4 / M4A (AAC)'
-
-          before = mod.inspect_audio_health(fake)
+          # Fixture B: a clean MP4/AAC payload saved as .mp3 must actually be
+          # converted to MPEG Layer III successfully.
+          clean = Path('clean_disguised_aac.mp3')
+          subprocess.check_call([
+              ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
+              '-f', 'lavfi', '-i', 'sine=frequency=523:duration=1',
+              '-c:a', 'aac', '-f', 'mp4', str(clean)
+          ])
+          tags = ID3(); tags.add(TIT2(encoding=3, text='另一半')); tags.add(TPE1(encoding=3, text='金池')); tags.save(clean, v2_version=3)
+          before = mod.inspect_audio_health(clean)
           assert before['state'] == 'convert', before
-          assert before['format'] == 'MP4 / M4A (AAC)', before
-
-          converted, after = mod.ensure_compatible_mp3(fake)
+          converted, after = mod.ensure_compatible_mp3(clean)
           assert converted is True
           assert after['state'] == 'compatible', after
-          parsed = MP3(fake)
-          assert parsed.info.length > 0
+          assert MP3(clean).info.length > 0
           print('Container-signature regression passed:', before['format'], '->', after['format'])
           '@ | Set-Content -Encoding utf8 test_signature_precedence.py
           python test_signature_precedence.py
@@ -138,18 +141,14 @@ jobs:
 
           cover = Path('album_cover.jpg')
           im = Image.new('RGB', (900, 900), (25, 40, 75))
-          d = ImageDraw.Draw(im)
-          d.rectangle((140, 140, 760, 760), fill=(235, 235, 230))
-          im.save(cover, quality=94)
+          d = ImageDraw.Draw(im); d.rectangle((140, 140, 760, 760), fill=(235, 235, 230)); im.save(cover, quality=94)
 
           preview = mod.TaskThread('preview', files=tracks, cfg={
               'album': 'Between Departures', 'cover_enabled': True,
               'cover_mode': 'fixed', 'fixed_cover': str(cover),
               'cover_folder': '', 'cover_recursive': False,
           })
-          preview_result = []
-          preview.finished_data.connect(lambda d: preview_result.append(d))
-          preview._run_preview()
+          preview_result = []; preview.finished_data.connect(lambda d: preview_result.append(d)); preview._run_preview()
           assert preview_result
           plan = preview_result[0]['plan']
           assert len(plan) == 2
@@ -159,16 +158,12 @@ jobs:
               'album_name': 'Between Departures', 'write_artist_title': True,
               'write_album': True, 'cover': True, 'rename': False, 'folder': '.',
           })
-          result = []
-          apply.finished_data.connect(lambda d: result.append(d))
-          apply._run_apply()
+          result = []; apply.finished_data.connect(lambda d: result.append(d)); apply._run_apply()
           assert result and not result[0]['errors'], result
 
           hashes = []
           for track in tracks:
-              tags = ID3(track)
-              pics = tags.getall('APIC')
-              assert pics
+              pics = ID3(track).getall('APIC'); assert pics
               hashes.append(hashlib.sha256(pics[0].data).hexdigest())
           assert len(set(hashes)) == 1, hashes
           print('Fixed album cover test passed')
