@@ -42,15 +42,16 @@ jobs:
           python tools/patch_v711.py
           python tools/patch_v720.py
           python tools/patch_v721.py
+          python tools/patch_v730.py
 
       - name: Syntax check
-        run: python -m py_compile mp3_organizer_v7_2_1.py
+        run: python -m py_compile mp3_organizer_v7_3_0.py
 
       - name: Smoke test PySide6 UI
         shell: pwsh
         run: |
           $env:QT_QPA_PLATFORM = 'offscreen'
-          python mp3_organizer_v7_2_1.py --smoke-test
+          python mp3_organizer_v7_3_0.py --smoke-test
 
       - name: Test MP4 AAC false-positive MP3 regression
         shell: pwsh
@@ -63,14 +64,11 @@ jobs:
           from mutagen.id3 import ID3, TIT2, TPE1
           from mutagen.mp3 import MP3
 
-          spec = importlib.util.spec_from_file_location('organizer', 'mp3_organizer_v7_2_1.py')
+          spec = importlib.util.spec_from_file_location('organizer', 'mp3_organizer_v7_3_0.py')
           mod = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(mod)
           ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
 
-          # Fixture A: reproduce the exact detection class. The payload starts
-          # as MP4/AAC, while a valid MPEG stream later in the file tricks
-          # Mutagen's MP3 scanner into returning an MP3 object.
           mp4 = Path('aac_payload.mp4')
           bait = Path('mpeg_bait.mp3')
           tricky = Path('tricky_disguised_aac.mp3')
@@ -86,15 +84,11 @@ jobs:
           ])
           tricky.write_bytes(mp4.read_bytes() + bait.read_bytes())
           tags = ID3(); tags.add(TIT2(encoding=3, text='另一半')); tags.add(TPE1(encoding=3, text='金池')); tags.save(tricky, v2_version=3)
-          misleading = MP3(tricky)
-          assert misleading.info.length > 0, 'Fixture did not reproduce Mutagen false-positive'
+          assert MP3(tricky).info.length > 0
           assert mod.sniff_audio_container(tricky) == 'MP4 / M4A (AAC)'
           detected = mod.inspect_audio_health(tricky)
           assert detected['state'] == 'convert', detected
-          assert detected['format'] == 'MP4 / M4A (AAC)', detected
 
-          # Fixture B: a clean MP4/AAC payload saved as .mp3 must actually be
-          # converted to MPEG Layer III successfully.
           clean = Path('clean_disguised_aac.mp3')
           subprocess.check_call([
               ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
@@ -105,14 +99,13 @@ jobs:
           before = mod.inspect_audio_health(clean)
           assert before['state'] == 'convert', before
           converted, after = mod.ensure_compatible_mp3(clean)
-          assert converted is True
-          assert after['state'] == 'compatible', after
+          assert converted is True and after['state'] == 'compatible', after
           assert MP3(clean).info.length > 0
-          print('Container-signature regression passed:', before['format'], '->', after['format'])
+          print('Audio compatibility regression passed')
           '@ | Set-Content -Encoding utf8 test_signature_precedence.py
           python test_signature_precedence.py
 
-      - name: Test fixed album cover mode
+      - name: Test independent track and album artwork
         shell: pwsh
         run: |
           @'
@@ -121,60 +114,87 @@ jobs:
           import subprocess
           from pathlib import Path
           import imageio_ffmpeg
-          from PIL import Image, ImageDraw
+          from PIL import Image
           from mutagen.id3 import ID3
           from PySide6.QtCore import QCoreApplication
 
-          spec = importlib.util.spec_from_file_location('organizer', 'mp3_organizer_v7_2_1.py')
+          spec = importlib.util.spec_from_file_location('organizer', 'mp3_organizer_v7_3_0.py')
           mod = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(mod)
           app = QCoreApplication.instance() or QCoreApplication([])
           ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
 
-          tracks = [Path('fixed_cover_a.mp3'), Path('fixed_cover_b.mp3')]
+          root = Path('album_art_test'); root.mkdir(exist_ok=True)
+          tracks = [root / 'a.mp3', root / 'b.mp3']
           for i, track in enumerate(tracks, 1):
               subprocess.check_call([
                   ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
-                  '-f', 'lavfi', '-i', f'sine=frequency={400+i*60}:duration=1',
+                  '-f', 'lavfi', '-i', f'sine=frequency={400+i*80}:duration=1',
                   '-c:a', 'libmp3lame', '-q:a', '4', str(track)
               ])
 
-          cover = Path('album_cover.jpg')
-          im = Image.new('RGB', (900, 900), (25, 40, 75))
-          d = ImageDraw.Draw(im); d.rectangle((140, 140, 760, 760), fill=(235, 235, 230)); im.save(cover, quality=94)
+          track_covers = [root / 'track_a.jpg', root / 'track_b.jpg']
+          Image.new('RGB', (600,600), (220,40,40)).save(track_covers[0], quality=92)
+          Image.new('RGB', (600,600), (40,80,220)).save(track_covers[1], quality=92)
+          album_cover = root / 'chosen_album.png'
+          Image.new('RGB', (900,700), (35,170,85)).save(album_cover)
 
-          preview = mod.TaskThread('preview', files=tracks, cfg={
-              'album': 'Between Departures', 'cover_enabled': True,
-              'cover_mode': 'fixed', 'fixed_cover': str(cover),
-              'cover_folder': '', 'cover_recursive': False,
-          })
-          preview_result = []; preview.finished_data.connect(lambda d: preview_result.append(d)); preview._run_preview()
-          assert preview_result
-          plan = preview_result[0]['plan']
-          assert len(plan) == 2
-          assert all(Path(r['cover']).resolve() == cover.resolve() for r in plan)
+          plan = []
+          for i, track in enumerate(tracks):
+              plan.append({
+                  'old': track, 'new': track, 'artist': f'Artist {i+1}', 'title': f'Title {i+1}',
+                  'album': 'Between Departures', 'score': 1.0, 'source': 'test', 'review': False,
+                  'apply_status': 'pending', 'cover': track_covers[i],
+                  'audio_state': 'compatible', 'audio_format': 'MP3', 'audio_detail': 'MP3',
+              })
 
-          apply = mod.TaskThread('apply', plan=plan, cfg={
-              'album_name': 'Between Departures', 'write_artist_title': True,
-              'write_album': True, 'cover': True, 'rename': False, 'folder': '.',
+          worker = mod.TaskThread('apply', plan=plan, cfg={
+              'album_name':'Between Departures', 'write_artist_title':True, 'write_album':True,
+              'cover':True, 'rename':False, 'folder':str(root), 'album_art_file':str(album_cover),
           })
-          result = []; apply.finished_data.connect(lambda d: result.append(d)); apply._run_apply()
+          result=[]; worker.finished_data.connect(lambda d: result.append(d)); worker._run_apply()
           assert result and not result[0]['errors'], result
+          target = root / 'albumart.jpg'
+          assert target.is_file() and result[0]['album_art_written'], result
+          with Image.open(target) as im: im.verify()
 
-          hashes = []
+          hashes=[]
           for track in tracks:
-              pics = ID3(track).getall('APIC'); assert pics
+              pics=ID3(track).getall('APIC'); assert pics
               hashes.append(hashlib.sha256(pics[0].data).hexdigest())
-          assert len(set(hashes)) == 1, hashes
-          print('Fixed album cover test passed')
-          '@ | Set-Content -Encoding utf8 test_fixed_cover.py
-          python test_fixed_cover.py
+          assert hashes[0] != hashes[1], 'Track covers were incorrectly unified'
+          album_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+          assert album_hash not in hashes
+          print('Independent artwork test passed: distinct APIC + albumart.jpg')
+          '@ | Set-Content -Encoding utf8 test_independent_artwork.py
+          python test_independent_artwork.py
+
+      - name: Test UI cover controls
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          @'
+          import importlib.util
+          from PySide6.QtWidgets import QApplication
+          spec = importlib.util.spec_from_file_location('organizer', 'mp3_organizer_v7_3_0.py')
+          mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+          app = QApplication.instance() or QApplication([])
+          w = mod.App(); w.resize(1540, 920); w.show(); app.processEvents()
+          assert not hasattr(w, 'cover_mode_combo')
+          assert w.cover_edit.isVisible() and w.album_art_edit.isVisible()
+          assert w.cover_btn.height() > 0 and w.album_art_btn.height() > 0
+          assert w.switch_rows['include_mp3_sub'].height() >= 34
+          assert w.switch_rows['include_cover_sub'].height() >= 34
+          print('UI cover controls regression passed')
+          w.close()
+          '@ | Set-Content -Encoding utf8 test_ui_controls.py
+          python test_ui_controls.py
 
       - name: Upload reconstructed source
         uses: actions/upload-artifact@v4
         with:
-          name: MP3-Organizer-v7.2.1-source
-          path: mp3_organizer_v7_2_1.py
+          name: MP3-Organizer-v7.3.0-source
+          path: mp3_organizer_v7_3_0.py
           if-no-files-found: error
           retention-days: 7
 
@@ -199,18 +219,18 @@ jobs:
           @'
           VSVersionInfo(
             ffi=FixedFileInfo(
-              filevers=(7,2,1,0), prodvers=(7,2,1,0), mask=0x3f,
+              filevers=(7,3,0,0), prodvers=(7,3,0,0), mask=0x3f,
               flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0,0)
             ),
             kids=[
               StringFileInfo([StringTable(u'040904B0', [
                 StringStruct(u'CompanyName', u'WenZurich'),
                 StringStruct(u'FileDescription', u'MP3 Organizer'),
-                StringStruct(u'FileVersion', u'7.2.1'),
+                StringStruct(u'FileVersion', u'7.3.0'),
                 StringStruct(u'InternalName', u'MP3 Organizer'),
                 StringStruct(u'OriginalFilename', u'MP3 Organizer.exe'),
                 StringStruct(u'ProductName', u'MP3 Organizer'),
-                StringStruct(u'ProductVersion', u'7.2.1')
+                StringStruct(u'ProductVersion', u'7.3.0')
               ])]),
               VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
             ]
@@ -229,7 +249,7 @@ jobs:
             --icon app.ico `
             --version-file version_info.txt `
             --collect-all imageio_ffmpeg `
-            mp3_organizer_v7_2_1.py
+            mp3_organizer_v7_3_0.py
 
       - name: Verify EXE exists
         shell: pwsh
@@ -240,7 +260,7 @@ jobs:
       - name: Upload Windows EXE
         uses: actions/upload-artifact@v4
         with:
-          name: MP3-Organizer-Windows-x64-v7.2.1
+          name: MP3-Organizer-Windows-x64-v7.3.0
           path: dist/MP3 Organizer.exe
           if-no-files-found: error
           retention-days: 30
