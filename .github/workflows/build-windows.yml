@@ -43,14 +43,17 @@ jobs:
       - name: Patch v7.1.1 apply-time verification
         run: python tools/patch_v711.py
 
+      - name: Patch v7.2.0 fixed album cover mode
+        run: python tools/patch_v720.py
+
       - name: Syntax check
-        run: python -m py_compile mp3_organizer_v7_1_1.py
+        run: python -m py_compile mp3_organizer_v7_2_0.py
 
       - name: Smoke test PySide6 UI
         shell: pwsh
         run: |
           $env:QT_QPA_PLATFORM = 'offscreen'
-          python mp3_organizer_v7_1_1.py --smoke-test
+          python mp3_organizer_v7_2_0.py --smoke-test
 
       - name: Test real-world disguised MP3 repair
         shell: pwsh
@@ -64,15 +67,12 @@ jobs:
           from mutagen.mp3 import MP3
           from PySide6.QtCore import QCoreApplication
 
-          spec = importlib.util.spec_from_file_location('organizer', 'mp3_organizer_v7_1_1.py')
+          spec = importlib.util.spec_from_file_location('organizer', 'mp3_organizer_v7_2_0.py')
           mod = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(mod)
 
           ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
           fake = Path('compatibility_test.mp3')
-
-          # Reproduce the real failure mode: an MP4/AAC payload saved with a .mp3
-          # name, then an ID3v2 tag prepended by the organizer.
           subprocess.check_call([
               ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
               '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1',
@@ -85,53 +85,112 @@ jobs:
 
           before = mod.inspect_audio_health(fake)
           assert before['state'] == 'convert', before
-
-          # Crucial regression test: the cached preview state is deliberately
-          # WRONG. Apply must still re-probe the real bytes and convert it.
           app = QCoreApplication.instance() or QCoreApplication([])
           plan = [{
-              'old': fake,
-              'new': fake,
-              'artist': 'Test Artist',
-              'title': 'Compatibility Test',
-              'album': 'Between Departures',
-              'score': 1.0,
-              'source': 'test',
-              'review': False,
-              'apply_status': 'pending',
-              'cover': None,
-              'audio_state': 'compatible',
-              'audio_format': 'MP3',
+              'old': fake, 'new': fake, 'artist': 'Test Artist',
+              'title': 'Compatibility Test', 'album': 'Between Departures',
+              'score': 1.0, 'source': 'test', 'review': False,
+              'apply_status': 'pending', 'cover': None,
+              'audio_state': 'compatible', 'audio_format': 'MP3',
               'audio_detail': 'stale cached value',
           }]
           worker = mod.TaskThread('apply', plan=plan, cfg={
-              'album_name': 'Between Departures',
-              'write_artist_title': True,
-              'write_album': True,
-              'cover': False,
-              'rename': False,
-              'folder': '.',
+              'album_name': 'Between Departures', 'write_artist_title': True,
+              'write_album': True, 'cover': False, 'rename': False, 'folder': '.',
           })
           result = []
           worker.finished_data.connect(lambda d: result.append(d))
           worker._run_apply()
-
-          assert result, 'Apply worker produced no result'
-          assert not result[0]['errors'], result[0]['errors']
+          assert result and not result[0]['errors'], result
           after = mod.inspect_audio_health(fake)
           assert after['state'] == 'compatible', after
-          parsed = MP3(fake)
-          assert parsed.info.length > 0
-          assert result[0]['row_results'][0]['converted'] is True, result[0]['row_results'][0]
-          print('Apply-time compatibility regression test passed:', before['format'], '->', after['format'])
+          assert MP3(fake).info.length > 0
+          assert result[0]['row_results'][0]['converted'] is True
+          print('Audio compatibility regression test passed:', before['format'], '->', after['format'])
           '@ | Set-Content -Encoding utf8 test_audio_compat.py
           python test_audio_compat.py
+
+      - name: Test fixed album cover mode
+        shell: pwsh
+        run: |
+          @'
+          import hashlib
+          import importlib.util
+          import subprocess
+          from pathlib import Path
+          import imageio_ffmpeg
+          from PIL import Image, ImageDraw
+          from mutagen.id3 import ID3
+          from PySide6.QtCore import QCoreApplication
+
+          spec = importlib.util.spec_from_file_location('organizer', 'mp3_organizer_v7_2_0.py')
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+          app = QCoreApplication.instance() or QCoreApplication([])
+          ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+
+          tracks = [Path('fixed_cover_a.mp3'), Path('fixed_cover_b.mp3')]
+          for i, track in enumerate(tracks, 1):
+              subprocess.check_call([
+                  ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
+                  '-f', 'lavfi', '-i', f'sine=frequency={400+i*60}:duration=1',
+                  '-c:a', 'libmp3lame', '-q:a', '4', str(track)
+              ])
+
+          cover = Path('album_cover.jpg')
+          im = Image.new('RGB', (900, 900), (25, 40, 75))
+          d = ImageDraw.Draw(im)
+          d.rectangle((140, 140, 760, 760), fill=(235, 235, 230))
+          im.save(cover, quality=94)
+
+          preview = mod.TaskThread('preview', files=tracks, cfg={
+              'album': 'Between Departures',
+              'cover_enabled': True,
+              'cover_mode': 'fixed',
+              'fixed_cover': str(cover),
+              'cover_folder': '',
+              'cover_recursive': False,
+          })
+          preview_result = []
+          preview.finished_data.connect(lambda d: preview_result.append(d))
+          preview._run_preview()
+          assert preview_result, 'Preview produced no result'
+          plan = preview_result[0]['plan']
+          assert len(plan) == 2
+          assert all(Path(r['cover']).resolve() == cover.resolve() for r in plan), plan
+          assert preview_result[0]['images'] == 1
+
+          apply = mod.TaskThread('apply', plan=plan, cfg={
+              'album_name': 'Between Departures',
+              'write_artist_title': True,
+              'write_album': True,
+              'cover': True,
+              'rename': False,
+              'folder': '.',
+          })
+          apply_result = []
+          apply.finished_data.connect(lambda d: apply_result.append(d))
+          apply._run_apply()
+          assert apply_result and not apply_result[0]['errors'], apply_result
+
+          hashes = []
+          for track in tracks:
+              tags = ID3(track)
+              pics = tags.getall('APIC')
+              assert pics, f'No APIC in {track}'
+              assert tags.get('TALB').text[0] == 'Between Departures'
+              assert tags.get('TPE2').text[0] == 'Various Artists'
+              hashes.append(hashlib.sha256(pics[0].data).hexdigest())
+          assert len(set(hashes)) == 1, hashes
+          print('Fixed album cover test passed: same front cover embedded in every track')
+          '@ | Set-Content -Encoding utf8 test_fixed_cover.py
+          python test_fixed_cover.py
 
       - name: Upload reconstructed source
         uses: actions/upload-artifact@v4
         with:
-          name: MP3-Organizer-v7.1.1-source
-          path: mp3_organizer_v7_1_1.py
+          name: MP3-Organizer-v7.2.0-source
+          path: mp3_organizer_v7_2_0.py
           if-no-files-found: error
           retention-days: 7
 
@@ -156,8 +215,8 @@ jobs:
           @'
           VSVersionInfo(
             ffi=FixedFileInfo(
-              filevers=(7,1,1,0),
-              prodvers=(7,1,1,0),
+              filevers=(7,2,0,0),
+              prodvers=(7,2,0,0),
               mask=0x3f,
               flags=0x0,
               OS=0x40004,
@@ -172,11 +231,11 @@ jobs:
                   [
                     StringStruct(u'CompanyName', u'WenZurich'),
                     StringStruct(u'FileDescription', u'MP3 Organizer'),
-                    StringStruct(u'FileVersion', u'7.1.1'),
+                    StringStruct(u'FileVersion', u'7.2.0'),
                     StringStruct(u'InternalName', u'MP3 Organizer'),
                     StringStruct(u'OriginalFilename', u'MP3 Organizer.exe'),
                     StringStruct(u'ProductName', u'MP3 Organizer'),
-                    StringStruct(u'ProductVersion', u'7.1.1')
+                    StringStruct(u'ProductVersion', u'7.2.0')
                   ]
                 )
               ]),
@@ -197,7 +256,7 @@ jobs:
             --icon app.ico `
             --version-file version_info.txt `
             --collect-all imageio_ffmpeg `
-            mp3_organizer_v7_1_1.py
+            mp3_organizer_v7_2_0.py
 
       - name: Verify EXE exists
         shell: pwsh
@@ -208,7 +267,7 @@ jobs:
       - name: Upload Windows EXE
         uses: actions/upload-artifact@v4
         with:
-          name: MP3-Organizer-Windows-x64-v7.1.1
+          name: MP3-Organizer-Windows-x64-v7.2.0
           path: dist/MP3 Organizer.exe
           if-no-files-found: error
           retention-days: 30
