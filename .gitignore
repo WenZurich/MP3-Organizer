@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+app.ico
+mp3_organizer_v6_5_0.py
