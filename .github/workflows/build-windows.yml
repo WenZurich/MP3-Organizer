@@ -179,7 +179,7 @@ jobs:
           spec = importlib.util.spec_from_file_location('organizer', 'mp3_organizer_v7_3_0.py')
           mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
           app = QApplication.instance() or QApplication([])
-          w = mod.App(); w.resize(1540, 920); w.show(); app.processEvents()
+          w = mod.MainWindow(); w.resize(1540, 920); w.show(); app.processEvents()
           assert not hasattr(w, 'cover_mode_combo')
           assert w.cover_edit.isVisible() and w.album_art_edit.isVisible()
           assert w.cover_btn.height() > 0 and w.album_art_btn.height() > 0
