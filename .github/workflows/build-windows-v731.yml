@@ -1,0 +1,166 @@
+name: Build Windows EXE v7.3.1
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/patch_v731.py'
+      - '.github/workflows/build-windows-v731.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Windows x64 HiDPI UI
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Reconstruct v7.3.1
+        shell: pwsh
+        run: |
+          python tools/reconstruct_source.py
+          python tools/patch_v710.py
+          python tools/patch_v711.py
+          python tools/patch_v720.py
+          python tools/patch_v721.py
+          python tools/patch_v730.py
+          python tools/patch_v731.py
+
+      - name: Syntax and smoke test
+        shell: pwsh
+        run: |
+          python -m py_compile mp3_organizer_v7_3_1.py
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          python mp3_organizer_v7_3_1.py --smoke-test
+
+      - name: Test Windows 150 percent UI geometry and render preview
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:QT_SCALE_FACTOR = '1.5'
+          @'
+          import importlib.util
+          from pathlib import Path
+          from PySide6.QtWidgets import QApplication
+          from PySide6.QtGui import QPixmap
+
+          spec = importlib.util.spec_from_file_location('organizer', 'mp3_organizer_v7_3_1.py')
+          mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+          app = QApplication.instance() or QApplication([])
+          w = mod.MainWindow(); w.resize(1600, 1000)
+          w.folder_edit.setText(r'C:\Users\User.DESKTOP-DSB6AEL\Desktop\MP3')
+          w.cover_edit.setText(r'C:\Users\User.DESKTOP-DSB6AEL\Desktop\Training Img\MP3 Cover')
+          w.album_art_edit.setText(r'C:\Users\User.DESKTOP-DSB6AEL\Desktop\Between Departures Album Cover.jpg')
+          for e in (w.folder_edit, w.cover_edit, w.album_art_edit, w.album_edit): e.setCursorPosition(0)
+          w.show(); app.processEvents()
+
+          fields = (w.folder_edit, w.cover_edit, w.album_edit, w.album_art_edit)
+          buttons = (w.folder_btn, w.cover_btn, w.album_art_btn, w.album_art_clear_btn)
+          assert all(x.height() >= 42 for x in fields), [x.height() for x in fields]
+          assert all(x.height() >= 42 for x in buttons), [x.height() for x in buttons]
+          assert w.album_art_edit.width() >= 300, w.album_art_edit.width()
+          assert w.album_art_btn.y() > w.album_art_edit.y(), (w.album_art_btn.geometry(), w.album_art_edit.geometry())
+          assert w.folder_edit.cursorPosition() == 0
+          assert w.cover_edit.cursorPosition() == 0
+          assert w.album_art_edit.cursorPosition() == 0
+
+          pix = QPixmap(w.size())
+          w.render(pix)
+          assert pix.save('ui-v7.3.1-150pct.png')
+          print('HiDPI UI geometry passed', [x.height() for x in fields], w.album_art_edit.width())
+          w.close()
+          '@ | Set-Content -Encoding utf8 test_ui_hidpi.py
+          python test_ui_hidpi.py
+
+      - name: Upload UI preview
+        uses: actions/upload-artifact@v4
+        with:
+          name: MP3-Organizer-v7.3.1-UI-preview
+          path: ui-v7.3.1-150pct.png
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload source
+        uses: actions/upload-artifact@v4
+        with:
+          name: MP3-Organizer-v7.3.1-source
+          path: mp3_organizer_v7_3_1.py
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Create Windows icon
+        shell: pwsh
+        run: |
+          @'
+          from PIL import Image, ImageDraw
+          im = Image.new('RGBA', (256, 256), (0, 0, 0, 0))
+          d = ImageDraw.Draw(im)
+          d.rounded_rectangle((12, 12, 244, 244), radius=58, fill=(0, 122, 255, 255))
+          d.ellipse((70, 146, 126, 202), fill='white')
+          d.rounded_rectangle((112, 62, 132, 174), radius=8, fill='white')
+          d.polygon([(128, 62), (194, 47), (194, 79), (128, 94)], fill='white')
+          im.save('app.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])
+          '@ | Set-Content -Encoding utf8 make_icon.py
+          python make_icon.py
+
+      - name: Create Windows version metadata
+        shell: pwsh
+        run: |
+          @'
+          VSVersionInfo(
+            ffi=FixedFileInfo(filevers=(7,3,1,0), prodvers=(7,3,1,0), mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0,0)),
+            kids=[
+              StringFileInfo([StringTable(u'040904B0', [
+                StringStruct(u'CompanyName', u'WenZurich'), StringStruct(u'FileDescription', u'MP3 Organizer'),
+                StringStruct(u'FileVersion', u'7.3.1'), StringStruct(u'InternalName', u'MP3 Organizer'),
+                StringStruct(u'OriginalFilename', u'MP3 Organizer.exe'), StringStruct(u'ProductName', u'MP3 Organizer'),
+                StringStruct(u'ProductVersion', u'7.3.1')
+              ])]), VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
+            ]
+          )
+          '@ | Set-Content -Encoding utf8 version_info.txt
+
+      - name: Build single-file Windows app
+        shell: pwsh
+        run: |
+          pyinstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --windowed `
+            --name "MP3 Organizer" `
+            --icon app.ico `
+            --version-file version_info.txt `
+            --collect-all imageio_ffmpeg `
+            mp3_organizer_v7_3_1.py
+
+      - name: Verify EXE exists
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'dist\MP3 Organizer.exe')) { throw 'EXE was not produced.' }
+          Get-Item 'dist\MP3 Organizer.exe' | Format-List Name,Length,LastWriteTime
+
+      - name: Upload Windows EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: MP3-Organizer-Windows-x64-v7.3.1
+          path: dist/MP3 Organizer.exe
+          if-no-files-found: error
+          retention-days: 30
