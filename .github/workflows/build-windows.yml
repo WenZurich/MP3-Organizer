@@ -5,7 +5,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'src_payload/**'
+      - 'src_payload_v7/**'
       - 'tools/**'
       - 'requirements.txt'
       - '.github/workflows/build-windows.yml'
@@ -38,7 +38,13 @@ jobs:
         run: python tools/reconstruct_source.py
 
       - name: Syntax check
-        run: python -m py_compile mp3_organizer_v6_5_0.py
+        run: python -m py_compile mp3_organizer_v7_0_0.py
+
+      - name: Smoke test PySide6 UI
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          python mp3_organizer_v7_0_0.py --smoke-test
 
       - name: Create Windows icon
         shell: pwsh
@@ -61,8 +67,8 @@ jobs:
           @'
           VSVersionInfo(
             ffi=FixedFileInfo(
-              filevers=(6,5,0,0),
-              prodvers=(6,5,0,0),
+              filevers=(7,0,0,0),
+              prodvers=(7,0,0,0),
               mask=0x3f,
               flags=0x0,
               OS=0x40004,
@@ -77,11 +83,11 @@ jobs:
                   [
                     StringStruct(u'CompanyName', u'WenZurich'),
                     StringStruct(u'FileDescription', u'MP3 Organizer'),
-                    StringStruct(u'FileVersion', u'6.5.0'),
+                    StringStruct(u'FileVersion', u'7.0.0'),
                     StringStruct(u'InternalName', u'MP3 Organizer'),
                     StringStruct(u'OriginalFilename', u'MP3 Organizer.exe'),
                     StringStruct(u'ProductName', u'MP3 Organizer'),
-                    StringStruct(u'ProductVersion', u'6.5.0')
+                    StringStruct(u'ProductVersion', u'7.0.0')
                   ]
                 )
               ]),
@@ -101,9 +107,7 @@ jobs:
             --name "MP3 Organizer" `
             --icon app.ico `
             --version-file version_info.txt `
-            --hidden-import tkinter `
-            --hidden-import tkinter.ttk `
-            mp3_organizer_v6_5_0.py
+            mp3_organizer_v7_0_0.py
 
       - name: Verify EXE exists
         shell: pwsh
@@ -114,7 +118,7 @@ jobs:
       - name: Upload Windows EXE
         uses: actions/upload-artifact@v4
         with:
-          name: MP3-Organizer-Windows-x64-v6.5.0
+          name: MP3-Organizer-Windows-x64-v7.0.0
           path: dist/MP3 Organizer.exe
           if-no-files-found: error
           retention-days: 30
