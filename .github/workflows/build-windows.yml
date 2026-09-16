@@ -34,25 +34,57 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: Reconstruct verified source
+      - name: Reconstruct v7.0.1 source
         run: python tools/reconstruct_source.py
 
-      - name: Syntax check
-        run: python -m py_compile mp3_organizer_v7_0_1.py
+      - name: Patch v7.1.0 audio compatibility layer
+        run: python tools/patch_v710.py
 
-      - name: Upload reconstructed source
-        uses: actions/upload-artifact@v4
-        with:
-          name: MP3-Organizer-v7.0.1-source
-          path: mp3_organizer_v7_0_1.py
-          if-no-files-found: error
-          retention-days: 7
+      - name: Syntax check
+        run: python -m py_compile mp3_organizer_v7_1_0.py
 
       - name: Smoke test PySide6 UI
         shell: pwsh
         run: |
           $env:QT_QPA_PLATFORM = 'offscreen'
-          python mp3_organizer_v7_0_1.py --smoke-test
+          python mp3_organizer_v7_1_0.py --smoke-test
+
+      - name: Test fake-MP3 detection and conversion
+        shell: pwsh
+        run: |
+          @'
+          import importlib.util
+          import subprocess
+          from pathlib import Path
+          import imageio_ffmpeg
+
+          spec = importlib.util.spec_from_file_location('organizer', 'mp3_organizer_v7_1_0.py')
+          mod = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(mod)
+
+          ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+          fake = Path('compatibility_test.mp3')
+          subprocess.check_call([
+              ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', '-y',
+              '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1',
+              '-c:a', 'aac', '-f', 'mp4', str(fake)
+          ])
+          before = mod.inspect_audio_health(fake)
+          assert before['state'] == 'convert', before
+          mod.convert_to_compatible_mp3(fake)
+          after = mod.inspect_audio_health(fake)
+          assert after['state'] == 'compatible', after
+          print('Audio compatibility smoke test passed:', before['format'], '->', after['format'])
+          '@ | Set-Content -Encoding utf8 test_audio_compat.py
+          python test_audio_compat.py
+
+      - name: Upload reconstructed source
+        uses: actions/upload-artifact@v4
+        with:
+          name: MP3-Organizer-v7.1.0-source
+          path: mp3_organizer_v7_1_0.py
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Create Windows icon
         shell: pwsh
@@ -75,8 +107,8 @@ jobs:
           @'
           VSVersionInfo(
             ffi=FixedFileInfo(
-              filevers=(7,0,1,0),
-              prodvers=(7,0,1,0),
+              filevers=(7,1,0,0),
+              prodvers=(7,1,0,0),
               mask=0x3f,
               flags=0x0,
               OS=0x40004,
@@ -91,11 +123,11 @@ jobs:
                   [
                     StringStruct(u'CompanyName', u'WenZurich'),
                     StringStruct(u'FileDescription', u'MP3 Organizer'),
-                    StringStruct(u'FileVersion', u'7.0.1'),
+                    StringStruct(u'FileVersion', u'7.1.0'),
                     StringStruct(u'InternalName', u'MP3 Organizer'),
                     StringStruct(u'OriginalFilename', u'MP3 Organizer.exe'),
                     StringStruct(u'ProductName', u'MP3 Organizer'),
-                    StringStruct(u'ProductVersion', u'7.0.1')
+                    StringStruct(u'ProductVersion', u'7.1.0')
                   ]
                 )
               ]),
@@ -115,7 +147,8 @@ jobs:
             --name "MP3 Organizer" `
             --icon app.ico `
             --version-file version_info.txt `
-            mp3_organizer_v7_0_1.py
+            --collect-all imageio_ffmpeg `
+            mp3_organizer_v7_1_0.py
 
       - name: Verify EXE exists
         shell: pwsh
@@ -126,7 +159,7 @@ jobs:
       - name: Upload Windows EXE
         uses: actions/upload-artifact@v4
         with:
-          name: MP3-Organizer-Windows-x64-v7.0.1
+          name: MP3-Organizer-Windows-x64-v7.1.0
           path: dist/MP3 Organizer.exe
           if-no-files-found: error
           retention-days: 30
