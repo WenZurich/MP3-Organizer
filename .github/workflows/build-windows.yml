@@ -40,6 +40,14 @@ jobs:
       - name: Syntax check
         run: python -m py_compile mp3_organizer_v7_0_0.py
 
+      - name: Upload reconstructed source
+        uses: actions/upload-artifact@v4
+        with:
+          name: MP3-Organizer-v7-source
+          path: mp3_organizer_v7_0_0.py
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Smoke test PySide6 UI
         shell: pwsh
         run: |
