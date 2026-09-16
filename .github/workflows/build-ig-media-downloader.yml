@@ -1,0 +1,39 @@
+name: Build IG Media Downloader EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ig-media-downloader-build
+    paths:
+      - "ig-media-downloader/**"
+      - ".github/workflows/build-ig-media-downloader.yml"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        working-directory: ig-media-downloader
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-build.txt
+
+      - name: Build Windows EXE
+        working-directory: ig-media-downloader
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name "IG-Media-Downloader" --collect-all gallery_dl app.py
+
+      - name: Upload Windows EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: IG-Media-Downloader-Windows
+          path: ig-media-downloader/dist/IG-Media-Downloader.exe
